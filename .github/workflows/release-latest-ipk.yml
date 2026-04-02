@@ -3,12 +3,161 @@ name: release-c200max-latest-ipk
 on:
   workflow_dispatch:
 
+concurrency:
+  group: openwrt-ipk-release-latest-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release-latest:
-    uses: ./.github/workflows/build-openwrt-ipk.yml
-    with:
-      packages: ''
-      source_ref: ''
-      publish_release: true
-      release_tag: latest
-    secrets: inherit
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Load target config
+        shell: bash
+        run: |
+          set -euo pipefail
+          source config/target.env
+          {
+            echo "OPENWRT_VERSION=${OPENWRT_VERSION}"
+            echo "OPENWRT_ARCH=${OPENWRT_ARCH}"
+            echo "SDK_IMAGE=${SDK_IMAGE}"
+            echo "PACKAGE_SOURCE_URL=${PACKAGE_SOURCE_URL}"
+            echo "PACKAGE_SOURCE_REF=${PACKAGE_SOURCE_REF}"
+            echo "CUSTOM_FEED_NAME=${CUSTOM_FEED_NAME}"
+            echo "TARGET_DEVICE_NAME=${TARGET_DEVICE_NAME}"
+            echo "TARGET_BOARD_NAME=${TARGET_BOARD_NAME}"
+            echo "TARGET_FIRMWARE_RELEASE=${TARGET_FIRMWARE_RELEASE}"
+            echo "TARGET_FIRMWARE_REVISION=${TARGET_FIRMWARE_REVISION}"
+            echo "TARGET_FIRMWARE_TARGET=${TARGET_FIRMWARE_TARGET}"
+            echo "TARGET_FIRMWARE_ARCH=${TARGET_FIRMWARE_ARCH}"
+            echo "TARGET_FIRMWARE_KERNEL=${TARGET_FIRMWARE_KERNEL}"
+            echo "TARGET_FIREWALL_BACKEND=${TARGET_FIREWALL_BACKEND}"
+            echo "PUBLISH_RELEASE=true"
+            echo "RELEASE_TAG=latest"
+            printf 'PACKAGE_DIRS<<__EOF__\n\n__EOF__\n'
+          } >> "${GITHUB_ENV}"
+          mkdir -p .cache/openwrt-dl dist
+
+      - name: Restore OpenWrt download cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/openwrt-dl
+          key: ${{ runner.os }}-openwrt-dl-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_ARCH }}-${{ hashFiles('config/packages.txt', 'config/target.env', 'scripts/build-ipk.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-dl-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_ARCH }}-
+
+      - name: Build latest IPK packages inside OpenWrt SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-ipk.sh
+          mkdir -p dist
+
+          set +e
+          docker run --rm \
+            --user root \
+            --env WORKSPACE=/workspace \
+            --env SDK_ROOT=/builder \
+            --env OPENWRT_VERSION \
+            --env OPENWRT_ARCH \
+            --env SDK_IMAGE \
+            --env PACKAGE_SOURCE_URL \
+            --env PACKAGE_SOURCE_REF \
+            --env PACKAGE_DIRS \
+            --env CUSTOM_FEED_NAME \
+            --env TARGET_DEVICE_NAME \
+            --env TARGET_BOARD_NAME \
+            --env TARGET_FIRMWARE_RELEASE \
+            --env TARGET_FIRMWARE_REVISION \
+            --env TARGET_FIRMWARE_TARGET \
+            --env TARGET_FIRMWARE_ARCH \
+            --env TARGET_FIRMWARE_KERNEL \
+            --env TARGET_FIREWALL_BACKEND \
+            --volume "${GITHUB_WORKSPACE}:/workspace" \
+            --volume "${GITHUB_WORKSPACE}/.cache/openwrt-dl:/builder/dl" \
+            "${SDK_IMAGE}" \
+            /bin/sh -lc '/workspace/scripts/build-ipk.sh' 2>&1 | tee dist/build.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [[ ${status} -ne 0 ]]; then
+            tail -n 200 dist/build.log || true
+            summary="$(tail -n 40 dist/build.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=OpenWrt build failed::${summary}"
+            exit ${status}
+          fi
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c200max-latest-release-${{ env.TARGET_BOARD_NAME }}-${{ github.run_number }}
+          path: |
+            dist/*.ipk
+            dist/Packages
+            dist/Packages.gz
+            dist/SHA256SUMS
+            dist/BUILD_INFO.txt
+            dist/RELEASE_NOTES.md
+            dist/build.log
+          if-no-files-found: warn
+
+      - name: Publish latest GitHub Release
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          release_files=(
+            dist/*.ipk
+            dist/Packages
+            dist/Packages.gz
+            dist/SHA256SUMS
+            dist/BUILD_INFO.txt
+            dist/RELEASE_NOTES.md
+          )
+
+          if (( ${#release_files[@]} == 0 )); then
+            echo 'No release files found.' >&2
+            exit 1
+          fi
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --notes-file dist/RELEASE_NOTES.md
+            gh release upload "${RELEASE_TAG}" "${release_files[@]}" --clobber
+          else
+            gh release create "${RELEASE_TAG}" "${release_files[@]}" \
+              --target "${GITHUB_SHA}" \
+              --title "${RELEASE_TAG}" \
+              --notes-file dist/RELEASE_NOTES.md
+          fi
+
+      - name: Write workflow summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Latest release build summary"
+            echo
+            if [[ -f dist/BUILD_INFO.txt ]]; then
+              echo '```text'
+              cat dist/BUILD_INFO.txt
+              echo '```'
+            elif [[ -f dist/build.log ]]; then
+              echo '```text'
+              tail -n 120 dist/build.log || true
+              echo '```'
+            else
+              echo "未找到 build 日志或 BUILD_INFO.txt。"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
