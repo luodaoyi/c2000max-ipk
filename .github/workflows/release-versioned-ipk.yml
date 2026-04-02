@@ -59,22 +59,14 @@ jobs:
 
           if [[ -z "${release_tag}" ]]; then
             existing_tags="$(gh release list --repo "${GITHUB_REPOSITORY}" --limit 200 --json tagName --jq '.[].tagName' || true)"
-            release_tag="$(EXISTING_TAGS="${existing_tags}" python3 - <<'PY'
-import os, re
-versions = []
-for raw in os.environ.get('EXISTING_TAGS', '').splitlines():
-    tag = raw.strip()
-    m = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', tag)
-    if m:
-        versions.append(tuple(map(int, m.groups())))
-if not versions:
-    print('1.0.0')
-else:
-    versions.sort()
-    major, minor, patch = versions[-1]
-    print(f'{major}.{minor}.{patch + 1}')
-PY
-)"
+            latest_version="$(printf '%s\n' "${existing_tags}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+
+            if [[ -z "${latest_version}" ]]; then
+              release_tag="1.0.0"
+            else
+              IFS='.' read -r major minor patch <<< "${latest_version}"
+              release_tag="${major}.${minor}.$((patch + 1))"
+            fi
           fi
 
           if [[ ! "${release_tag}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
