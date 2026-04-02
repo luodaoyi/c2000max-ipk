@@ -11,66 +11,130 @@ fail() {
   exit 1
 }
 
+trim() {
+  printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
 WORKSPACE="${WORKSPACE:-/workspace}"
 SDK_ROOT="${SDK_ROOT:-/builder}"
 PACKAGE_SOURCE_URL="${PACKAGE_SOURCE_URL:?PACKAGE_SOURCE_URL is required}"
 PACKAGE_SOURCE_REF="${PACKAGE_SOURCE_REF:-Lede}"
 OPENWRT_VERSION="${OPENWRT_VERSION:?OPENWRT_VERSION is required}"
 OPENWRT_ARCH="${OPENWRT_ARCH:?OPENWRT_ARCH is required}"
-CUSTOM_FEED_NAME="${CUSTOM_FEED_NAME:-shidahuilang}"
 SDK_IMAGE="${SDK_IMAGE:-unknown}"
+TAB="$(printf '\t')"
 
 STATE_DIR="${WORKSPACE}/.work"
 DIST_DIR="${WORKSPACE}/dist"
-UPSTREAM_DIR="${STATE_DIR}/upstream/openwrt-package"
 PACKAGE_LIST_FILE="${WORKSPACE}/config/packages.txt"
-PACKAGE_FILE="${STATE_DIR}/package-dirs.txt"
+PACKAGE_FILE="${STATE_DIR}/package-specs.tsv"
+PACKAGE_RAW_FILE="${STATE_DIR}/package-specs.raw"
+SOURCE_MAP_FILE="${STATE_DIR}/source-map.tsv"
+SOURCE_ROOT="${STATE_DIR}/sources"
 
-mkdir -p "${STATE_DIR}" "${DIST_DIR}"
-rm -f "${PACKAGE_FILE}"
+mkdir -p "${STATE_DIR}" "${DIST_DIR}" "${SOURCE_ROOT}"
+rm -f "${PACKAGE_FILE}" "${PACKAGE_RAW_FILE}" "${SOURCE_MAP_FILE}"
+
+validate_package_dir() {
+  pkg_dir="$1"
+
+  case "${pkg_dir}" in
+    /*)
+      fail "包路径不能是绝对路径：${pkg_dir}"
+      ;;
+    *..*)
+      fail "包路径不能包含 .. ：${pkg_dir}"
+      ;;
+    *)
+      :
+      ;;
+  esac
+
+  printf '%s' "${pkg_dir}" | grep -Eq '^[A-Za-z0-9._/-]+$' ||
+    fail "包路径包含非法字符：${pkg_dir}"
+}
+
+validate_source_url() {
+  source_url="$1"
+  printf '%s' "${source_url}" | grep -Eq '^[A-Za-z0-9:/._@+-]+$' ||
+    fail "源码地址包含非法字符：${source_url}"
+}
+
+validate_source_ref() {
+  source_ref="$1"
+  printf '%s' "${source_ref}" | grep -Eq '^[A-Za-z0-9._/-]+$' ||
+    fail "源码 Ref 包含非法字符：${source_ref}"
+}
+
+collect_raw_specs() {
+  input_source="$1"
+  : > "${PACKAGE_RAW_FILE}"
+
+  if [ "${input_source}" = "env" ]; then
+    printf '%s\n' "${PACKAGE_DIRS:-}" | sed 's/\r$//' > "${PACKAGE_RAW_FILE}.input"
+  else
+    [ -f "${PACKAGE_LIST_FILE}" ] || fail "找不到包清单文件：${PACKAGE_LIST_FILE}"
+    sed 's/\r$//' "${PACKAGE_LIST_FILE}" > "${PACKAGE_RAW_FILE}.input"
+  fi
+
+  while IFS= read -r raw_line || [ -n "${raw_line}" ]; do
+    line="$(trim "${raw_line}")"
+    [ -n "${line}" ] || continue
+
+    case "${line}" in
+      \#*)
+        continue
+        ;;
+      *'|'*)
+        printf '%s\n' "${line}" >> "${PACKAGE_RAW_FILE}"
+        ;;
+      *)
+        printf '%s\n' "${line}" | tr ', \t' '\n\n\n' >> "${PACKAGE_RAW_FILE}"
+        ;;
+    esac
+  done < "${PACKAGE_RAW_FILE}.input"
+
+  rm -f "${PACKAGE_RAW_FILE}.input"
+}
 
 normalize_package_list() {
   input_source="$1"
+  : > "${PACKAGE_FILE}.tmp"
 
-  if [ "${input_source}" = "env" ]; then
-    printf '%s\n' "${PACKAGE_DIRS:-}" |
-      tr ', \t' '\n\n\n' |
-      sed 's/\r$//' |
-      sed '/^[[:space:]]*$/d' > "${PACKAGE_FILE}"
-  else
-    if [ ! -f "${PACKAGE_LIST_FILE}" ]; then
-      fail "找不到包清单文件：${PACKAGE_LIST_FILE}"
-    fi
+  collect_raw_specs "${input_source}"
 
-    sed 's/#.*$//' "${PACKAGE_LIST_FILE}" |
-      tr ', \t' '\n\n\n' |
-      sed 's/\r$//' |
-      sed '/^[[:space:]]*$/d' > "${PACKAGE_FILE}"
-  fi
+  while IFS= read -r raw_spec || [ -n "${raw_spec}" ]; do
+    spec_line="$(trim "${raw_spec}")"
+    [ -n "${spec_line}" ] || continue
 
-  awk '!seen[$0]++ { print }' "${PACKAGE_FILE}" > "${PACKAGE_FILE}.tmp"
-  mv "${PACKAGE_FILE}.tmp" "${PACKAGE_FILE}"
+    package_dir="${spec_line}"
+    source_url="${PACKAGE_SOURCE_URL}"
+    source_ref="${PACKAGE_SOURCE_REF}"
 
-  if [ ! -s "${PACKAGE_FILE}" ]; then
-    fail "未解析到任何待编译包，请在 workflow_dispatch 输入 packages，或维护 config/packages.txt"
-  fi
-
-  while IFS= read -r pkg_dir; do
-    case "${pkg_dir}" in
-      /*)
-        fail "包路径不能是绝对路径：${pkg_dir}"
-        ;;
-      *..*)
-        fail "包路径不能包含 .. ：${pkg_dir}"
-        ;;
-      *)
-        :
+    case "${spec_line}" in
+      *'|'*)
+        IFS='|' read -r field1 field2 field3 field4 <<EOF
+${spec_line}
+EOF
+        [ -z "${field4:-}" ] || fail "包清单格式错误（仅支持 package_dir|source_url|source_ref）：${spec_line}"
+        package_dir="$(trim "${field1}")"
+        [ -n "${field2:-}" ] && source_url="$(trim "${field2}")"
+        [ -n "${field3:-}" ] && source_ref="$(trim "${field3}")"
         ;;
     esac
 
-    printf '%s' "${pkg_dir}" | grep -Eq '^[A-Za-z0-9._/-]+$' ||
-      fail "包路径包含非法字符：${pkg_dir}"
-  done < "${PACKAGE_FILE}"
+    validate_package_dir "${package_dir}"
+    validate_source_url "${source_url}"
+    validate_source_ref "${source_ref}"
+
+    printf '%s\t%s\t%s\n' "${package_dir}" "${source_url}" "${source_ref}" >> "${PACKAGE_FILE}.tmp"
+  done < "${PACKAGE_RAW_FILE}"
+
+  awk '!seen[$0]++ { print }' "${PACKAGE_FILE}.tmp" > "${PACKAGE_FILE}"
+  rm -f "${PACKAGE_FILE}.tmp"
+
+  [ -s "${PACKAGE_FILE}" ] ||
+    fail "未解析到任何待编译包，请维护 config/packages.txt 或在 workflow_dispatch 输入 packages"
 }
 
 prepare_sdk() {
@@ -84,26 +148,63 @@ prepare_sdk() {
   fi
 }
 
-clone_upstream_repo() {
-  rm -rf "${UPSTREAM_DIR}"
-  mkdir -p "$(dirname "${UPSTREAM_DIR}")"
+clone_source_repo() {
+  source_url="$1"
+  source_ref="$2"
+  repo_dir="$3"
 
-  log "克隆上游源码：${PACKAGE_SOURCE_URL} @ ${PACKAGE_SOURCE_REF}"
-  if ! git clone --filter=blob:none --depth 1 --branch "${PACKAGE_SOURCE_REF}" "${PACKAGE_SOURCE_URL}" "${UPSTREAM_DIR}"; then
-    git clone --filter=blob:none "${PACKAGE_SOURCE_URL}" "${UPSTREAM_DIR}"
+  rm -rf "${repo_dir}"
+  mkdir -p "$(dirname "${repo_dir}")"
+
+  log "克隆源码：${source_url} @ ${source_ref}"
+  if ! git clone --filter=blob:none --depth 1 --branch "${source_ref}" "${source_url}" "${repo_dir}"; then
+    git clone --filter=blob:none "${source_url}" "${repo_dir}"
     (
-      cd "${UPSTREAM_DIR}"
-      git fetch --depth 1 origin "${PACKAGE_SOURCE_REF}"
+      cd "${repo_dir}"
+      git fetch --depth 1 origin "${source_ref}"
       git checkout FETCH_HEAD
     )
   fi
+}
+
+lookup_source_mapping() {
+  source_url="$1"
+  source_ref="$2"
+
+  awk -F '\t' -v source_url="${source_url}" -v source_ref="${source_ref}" '
+    $1 == source_url && $2 == source_ref {
+      print $0
+      exit
+    }
+  ' "${SOURCE_MAP_FILE}"
+}
+
+prepare_sources() {
+  : > "${SOURCE_MAP_FILE}"
+  source_index=0
+
+  while IFS="${TAB}" read -r package_dir source_url source_ref; do
+    mapping="$(lookup_source_mapping "${source_url}" "${source_ref}")"
+    if [ -n "${mapping}" ]; then
+      continue
+    fi
+
+    source_index=$((source_index + 1))
+    feed_name="custom${source_index}"
+    repo_dir="${SOURCE_ROOT}/${feed_name}"
+
+    clone_source_repo "${source_url}" "${source_ref}" "${repo_dir}"
+    printf '%s\t%s\t%s\t%s\n' "${source_url}" "${source_ref}" "${feed_name}" "${repo_dir}" >> "${SOURCE_MAP_FILE}"
+  done < "${PACKAGE_FILE}"
 }
 
 configure_feeds() {
   cd "${SDK_ROOT}"
 
   cp feeds.conf.default feeds.conf
-  printf '\nsrc-link %s %s\n' "${CUSTOM_FEED_NAME}" "${UPSTREAM_DIR}" >> feeds.conf
+  while IFS="${TAB}" read -r source_url source_ref feed_name repo_dir; do
+    printf '\nsrc-link %s %s\n' "${feed_name}" "${repo_dir}" >> feeds.conf
+  done < "${SOURCE_MAP_FILE}"
 
   log "更新官方 feeds"
   ./scripts/feeds update -a
@@ -111,10 +212,17 @@ configure_feeds() {
   log "安装官方 feeds"
   ./scripts/feeds install -a
 
-  log "安装自定义 feed 目标包：${CUSTOM_FEED_NAME}"
-  while IFS= read -r pkg_dir; do
-    pkg_name="${pkg_dir##*/}"
-    ./scripts/feeds install -f -p "${CUSTOM_FEED_NAME}" "${pkg_name}"
+  log "安装选定的自定义包"
+  while IFS="${TAB}" read -r package_dir source_url source_ref; do
+    mapping="$(lookup_source_mapping "${source_url}" "${source_ref}")"
+    [ -n "${mapping}" ] || fail "未找到源码映射：${source_url} @ ${source_ref}"
+
+    IFS="${TAB}" read -r _map_url _map_ref feed_name repo_dir <<EOF
+${mapping}
+EOF
+    pkg_name="${package_dir##*/}"
+
+    ./scripts/feeds install -f -p "${feed_name}" "${pkg_name}"
   done < "${PACKAGE_FILE}"
 
   log "生成 defconfig"
@@ -122,11 +230,12 @@ configure_feeds() {
 }
 
 find_installed_package_dir() {
-  source_dir="$1"
+  feed_name="$1"
+  source_dir="$2"
+  feed_dir="${SDK_ROOT}/package/feeds/${feed_name}"
   result=""
 
-  [ -d "${SDK_ROOT}/package/feeds/${CUSTOM_FEED_NAME}" ] ||
-    fail "未找到自定义 feed 安装目录：${SDK_ROOT}/package/feeds/${CUSTOM_FEED_NAME}"
+  [ -d "${feed_dir}" ] || fail "未找到 feed 安装目录：${feed_dir}"
 
   while IFS= read -r installed_path; do
     real_path="$(readlink -f "${installed_path}")"
@@ -138,7 +247,7 @@ find_installed_package_dir() {
 
     result="${installed_path}"
   done <<EOF
-$(find "${SDK_ROOT}/package/feeds/${CUSTOM_FEED_NAME}" -mindepth 1 -maxdepth 3 \( -type l -o -type d \) | sort)
+$(find "${feed_dir}" -mindepth 1 -maxdepth 3 \( -type l -o -type d \) | sort)
 EOF
 
   [ -n "${result}" ] || fail "未找到已安装的 feed 包目录：${source_dir}"
@@ -148,14 +257,21 @@ EOF
 compile_packages() {
   build_jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 
-  while IFS= read -r pkg_dir; do
-    source_dir="${UPSTREAM_DIR}/${pkg_dir}"
-    [ -d "${source_dir}" ] || fail "上游仓库中不存在包目录：${pkg_dir}"
+  while IFS="${TAB}" read -r package_dir source_url source_ref; do
+    mapping="$(lookup_source_mapping "${source_url}" "${source_ref}")"
+    [ -n "${mapping}" ] || fail "未找到源码映射：${source_url} @ ${source_ref}"
 
-    installed_dir="$(find_installed_package_dir "${source_dir}")"
+    IFS="${TAB}" read -r _map_url _map_ref feed_name repo_dir <<EOF
+${mapping}
+EOF
+
+    source_dir="${repo_dir}/${package_dir}"
+    [ -d "${source_dir}" ] || fail "源仓库 ${source_url}@${source_ref} 中不存在包目录：${package_dir}"
+
+    installed_dir="$(find_installed_package_dir "${feed_name}" "${source_dir}")"
     target_path="${installed_dir#${SDK_ROOT}/}"
 
-    log "编译 ${pkg_dir} -> ${target_path}"
+    log "编译 ${package_dir} (${feed_name}) -> ${target_path}"
     make -C "${SDK_ROOT}" "${target_path}/clean" V=s
     make -C "${SDK_ROOT}" "${target_path}/compile" V=s -j"${build_jobs}"
   done < "${PACKAGE_FILE}"
@@ -163,19 +279,23 @@ compile_packages() {
 
 render_release_notes() {
   build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-  upstream_commit="$(git -C "${UPSTREAM_DIR}" rev-parse HEAD)"
 
   {
     echo "OpenWrt Version: ${OPENWRT_VERSION}"
     echo "OpenWrt Arch: ${OPENWRT_ARCH}"
     echo "SDK Image: ${SDK_IMAGE}"
-    echo "Package Source URL: ${PACKAGE_SOURCE_URL}"
-    echo "Package Source Ref: ${PACKAGE_SOURCE_REF}"
-    echo "Package Source Commit: ${upstream_commit}"
-    echo "Custom Feed Name: ${CUSTOM_FEED_NAME}"
+    echo "Default Source URL: ${PACKAGE_SOURCE_URL}"
+    echo "Default Source Ref: ${PACKAGE_SOURCE_REF}"
     echo "Build Time (UTC): ${build_time}"
-    echo "Selected Package Directories:"
-    sed 's/^/- /' "${PACKAGE_FILE}"
+    echo "Selected Packages:"
+    while IFS="${TAB}" read -r package_dir source_url source_ref; do
+      echo "- ${package_dir} | ${source_url} @ ${source_ref}"
+    done < "${PACKAGE_FILE}"
+    echo "Resolved Source Commits:"
+    while IFS="${TAB}" read -r source_url source_ref feed_name repo_dir; do
+      source_commit="$(git -C "${repo_dir}" rev-parse HEAD)"
+      echo "- ${feed_name} | ${source_url} @ ${source_ref} | ${source_commit}"
+    done < "${SOURCE_MAP_FILE}"
   } > "${DIST_DIR}/BUILD_INFO.txt"
 
   {
@@ -184,35 +304,54 @@ render_release_notes() {
     echo "- OpenWrt: \`${OPENWRT_VERSION}\`"
     echo "- 架构: \`${OPENWRT_ARCH}\`"
     echo "- SDK 镜像: \`${SDK_IMAGE}\`"
-    echo "- 上游仓库: \`${PACKAGE_SOURCE_URL}\`"
-    echo "- 上游 Ref: \`${PACKAGE_SOURCE_REF}\`"
-    echo "- 上游 Commit: \`${upstream_commit}\`"
-    echo "- 自定义 Feed: \`${CUSTOM_FEED_NAME}\`"
+    echo "- 默认源码仓库: \`${PACKAGE_SOURCE_URL}\`"
+    echo "- 默认源码 Ref: \`${PACKAGE_SOURCE_REF}\`"
     echo "- 构建时间(UTC): \`${build_time}\`"
     echo
-    echo "## Selected package directories"
-    sed 's/^/- `&`/' "${PACKAGE_FILE}"
+    echo "## Selected packages"
+    while IFS="${TAB}" read -r package_dir source_url source_ref; do
+      echo "- \`${package_dir}\` from \`${source_url}\` @ \`${source_ref}\`"
+    done < "${PACKAGE_FILE}"
+    echo
+    echo "## Resolved source commits"
+    while IFS="${TAB}" read -r source_url source_ref feed_name repo_dir; do
+      source_commit="$(git -C "${repo_dir}" rev-parse HEAD)"
+      echo "- \`${feed_name}\`: \`${source_url}\` @ \`${source_ref}\` -> \`${source_commit}\`"
+    done < "${SOURCE_MAP_FILE}"
   } > "${DIST_DIR}/RELEASE_NOTES.md"
 }
 
 collect_artifacts() {
-  package_output_dir="${SDK_ROOT}/bin/packages/${OPENWRT_ARCH}/${CUSTOM_FEED_NAME}"
+  package_root="${SDK_ROOT}/bin/packages/${OPENWRT_ARCH}"
 
-  [ -d "${package_output_dir}" ] || fail "未找到编译产物目录：${package_output_dir}"
+  [ -d "${package_root}" ] || fail "未找到编译产物目录：${package_root}"
 
-  find "${DIST_DIR}" -mindepth 1 -maxdepth 1 -type f ! -name 'BUILD_INFO.txt' ! -name 'RELEASE_NOTES.md' -delete
-  set -- "${package_output_dir}"/*.ipk
-  [ -e "$1" ] || fail "自定义 feed 没有生成任何 .ipk 文件：${package_output_dir}"
-  cp "$@" "${DIST_DIR}/"
+  find "${DIST_DIR}" -mindepth 1 -maxdepth 1 -type f \
+    ! -name 'BUILD_INFO.txt' \
+    ! -name 'RELEASE_NOTES.md' \
+    ! -name 'build.log' -delete
+
+  while IFS="${TAB}" read -r package_dir source_url source_ref; do
+    pkg_name="${package_dir##*/}"
+    matches="$(find "${package_root}" -type f -name "${pkg_name}_*.ipk" | sort)"
+    [ -n "${matches}" ] || fail "未找到目标包产物：${pkg_name}"
+
+    printf '%s\n' "${matches}" | while IFS= read -r artifact; do
+      [ -n "${artifact}" ] || continue
+      cp "${artifact}" "${DIST_DIR}/"
+    done
+  done < "${PACKAGE_FILE}"
+
+  render_release_notes
 
   (
     cd "${DIST_DIR}"
+    set -- ./*.ipk
+    [ -e "$1" ] || fail "dist 目录中没有可索引的 .ipk 文件"
     "${SDK_ROOT}/scripts/ipkg-make-index.sh" . > Packages
     gzip -n -9c Packages > Packages.gz
     sha256sum ./*.ipk Packages Packages.gz > SHA256SUMS
   )
-
-  render_release_notes
 }
 
 main() {
@@ -225,7 +364,7 @@ main() {
   fi
 
   prepare_sdk
-  clone_upstream_repo
+  prepare_sources
   configure_feeds
   compile_packages
   collect_artifacts

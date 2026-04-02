@@ -1,11 +1,13 @@
-# 每行填写一个上游仓库中的包目录，路径相对于：
-# https://github.com/shidahuilang/openwrt-package
+# 默认包清单格式：
+# package_dir|source_url|source_ref
 #
-# 当前默认目标：
-# - luci-app-openclash
-# - luci-app-zerotier
+# 如果只写 package_dir，则默认使用：
+#   source_url = https://github.com/shidahuilang/openwrt-package.git
+#   source_ref = Lede
 #
-# 如需调整，可以直接修改此文件，或在 Actions 手动运行时填写 packages 输入框。
+# 当前目标：
+# - luci-app-openclash：上游仓库中不存在该目录，因此改用 OpenClash 官方源码
+# - luci-app-zerotier：继续使用 shidahuilang/openwrt-package 源码
 
-luci-app-openclash
-luci-app-zerotier
+luci-app-openclash|https://github.com/vernesong/OpenClash.git|master
+luci-app-zerotier|https://github.com/shidahuilang/openwrt-package.git|Lede

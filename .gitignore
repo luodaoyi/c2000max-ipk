@@ -1,3 +1,5 @@
 .cache/
 .work/
 dist/
+.inspect-*/
+job-*-logs.zip
