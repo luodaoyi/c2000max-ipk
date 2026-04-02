@@ -45,7 +45,7 @@ on:
       - main
     paths:
       - '.github/workflows/build-openwrt-ipk.yml'
-      - '.github/workflows/release-latest-ipk.yml'
+      - '.github/workflows/release-versioned-ipk.yml'
       - 'config/**'
       - 'scripts/**'
       - '.gitattributes'
