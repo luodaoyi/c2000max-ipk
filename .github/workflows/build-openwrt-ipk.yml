@@ -118,7 +118,9 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x scripts/build-ipk.sh
+          mkdir -p dist
 
+          set +e
           docker run --rm \
             --env WORKSPACE=/workspace \
             --env SDK_ROOT=/builder \
@@ -132,17 +134,27 @@ jobs:
             --volume "${GITHUB_WORKSPACE}:/workspace" \
             --volume "${GITHUB_WORKSPACE}/.cache/openwrt-dl:/builder/dl" \
             "${SDK_IMAGE}" \
-            /bin/sh -lc '/workspace/scripts/build-ipk.sh'
+            /bin/sh -lc '/workspace/scripts/build-ipk.sh' 2>&1 | tee dist/build.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [[ ${status} -ne 0 ]]; then
+            tail -n 200 dist/build.log || true
+            summary="$(tail -n 40 dist/build.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=OpenWrt build failed::${summary}"
+            exit ${status}
+          fi
 
       - name: Upload build artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-ipk-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_ARCH }}-${{ github.run_number }}
           path: dist/*
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Publish GitHub Release
-        if: env.PUBLISH_RELEASE == 'true'
+        if: success() && env.PUBLISH_RELEASE == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -172,7 +184,11 @@ jobs:
               echo '```text'
               cat dist/BUILD_INFO.txt
               echo '```'
+            elif [[ -f dist/build.log ]]; then
+              echo '```text'
+              tail -n 120 dist/build.log || true
+              echo '```'
             else
-              echo "dist/BUILD_INFO.txt 尚未生成。"
+              echo "未找到 build 日志或 BUILD_INFO.txt。"
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
