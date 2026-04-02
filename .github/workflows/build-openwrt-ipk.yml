@@ -151,7 +151,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-ipk-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_ARCH }}-${{ github.run_number }}
-          path: dist/*
+          path: dist/*.ipk
           if-no-files-found: warn
 
       - name: Publish GitHub Release
@@ -166,9 +166,9 @@ jobs:
             gh release edit "${RELEASE_TAG}" \
               --title "${RELEASE_TAG}" \
               --notes-file dist/RELEASE_NOTES.md
-            gh release upload "${RELEASE_TAG}" dist/* --clobber
+            gh release upload "${RELEASE_TAG}" dist/*.ipk --clobber
           else
-            gh release create "${RELEASE_TAG}" dist/* \
+            gh release create "${RELEASE_TAG}" dist/*.ipk \
               --target "${GITHUB_SHA}" \
               --title "${RELEASE_TAG}" \
               --notes-file dist/RELEASE_NOTES.md
@@ -193,3 +193,4 @@ jobs:
               echo "未找到 build 日志或 BUILD_INFO.txt。"
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
+

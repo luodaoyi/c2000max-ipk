@@ -198,6 +198,29 @@ prepare_sources() {
   done < "${PACKAGE_FILE}"
 }
 
+prepare_local_tools() {
+  BIN_DIR="${STATE_DIR}/bin"
+  mkdir -p "${BIN_DIR}"
+
+  export PATH="${BIN_DIR}:${SDK_ROOT}/staging_dir/host/bin:${SDK_ROOT}/staging_dir/hostpkg/bin:${PATH}"
+
+  while IFS="${TAB}" read -r package_dir source_url source_ref; do
+    mapping="$(lookup_source_mapping "${source_url}" "${source_ref}")"
+    [ -n "${mapping}" ] || fail "未找到源码映射：${source_url} @ ${source_ref}"
+
+    IFS="${TAB}" read -r _map_url _map_ref feed_name repo_dir <<EOF
+${mapping}
+EOF
+
+    po2lmo_dir="${repo_dir}/${package_dir}/tools/po2lmo"
+    if [ -f "${po2lmo_dir}/Makefile" ]; then
+      log "构建本地 po2lmo 工具：${package_dir}"
+      make -C "${po2lmo_dir}"
+      install -m 0755 "${po2lmo_dir}/src/po2lmo" "${BIN_DIR}/po2lmo"
+    fi
+  done < "${PACKAGE_FILE}"
+}
+
 configure_feeds() {
   cd "${SDK_ROOT}"
 
@@ -365,6 +388,7 @@ main() {
 
   prepare_sdk
   prepare_sources
+  prepare_local_tools
   configure_feeds
   compile_packages
   collect_artifacts
@@ -373,3 +397,4 @@ main() {
 }
 
 main "$@"
+
