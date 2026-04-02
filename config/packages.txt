@@ -8,6 +8,9 @@
 # 当前目标：
 # - luci-app-openclash：上游仓库中不存在该目录，因此改用 OpenClash 官方源码
 # - luci-app-zerotier：继续使用 shidahuilang/openwrt-package 源码
+# - zerotier：必须额外编译本体程序，否则 luci-app-zerotier 只有页面没有后端
+#   这里直接使用 SDK 官方 feeds/packages 中的 zerotier，尽量与 SDK 自身保持一致
 
 luci-app-openclash|https://github.com/vernesong/OpenClash.git|master
 luci-app-zerotier|https://github.com/shidahuilang/openwrt-package.git|Lede
+net/zerotier|sdk://packages|builtin

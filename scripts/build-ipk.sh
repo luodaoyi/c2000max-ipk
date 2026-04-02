@@ -22,6 +22,14 @@ PACKAGE_SOURCE_REF="${PACKAGE_SOURCE_REF:-Lede}"
 OPENWRT_VERSION="${OPENWRT_VERSION:?OPENWRT_VERSION is required}"
 OPENWRT_ARCH="${OPENWRT_ARCH:?OPENWRT_ARCH is required}"
 SDK_IMAGE="${SDK_IMAGE:-unknown}"
+TARGET_DEVICE_NAME="${TARGET_DEVICE_NAME:-}"
+TARGET_BOARD_NAME="${TARGET_BOARD_NAME:-}"
+TARGET_FIRMWARE_RELEASE="${TARGET_FIRMWARE_RELEASE:-}"
+TARGET_FIRMWARE_REVISION="${TARGET_FIRMWARE_REVISION:-}"
+TARGET_FIRMWARE_TARGET="${TARGET_FIRMWARE_TARGET:-}"
+TARGET_FIRMWARE_ARCH="${TARGET_FIRMWARE_ARCH:-}"
+TARGET_FIRMWARE_KERNEL="${TARGET_FIRMWARE_KERNEL:-}"
+TARGET_FIREWALL_BACKEND="${TARGET_FIREWALL_BACKEND:-}"
 TAB="$(printf '\t')"
 
 STATE_DIR="${WORKSPACE}/.work"
@@ -64,6 +72,34 @@ validate_source_ref() {
   source_ref="$1"
   printf '%s' "${source_ref}" | grep -Eq '^[A-Za-z0-9._/-]+$' ||
     fail "源码 Ref 包含非法字符：${source_ref}"
+}
+
+is_sdk_feed_source() {
+  case "$1" in
+    sdk://*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+sdk_feed_name() {
+  source_url="$1"
+  feed_name="${source_url#sdk://}"
+  [ -n "${feed_name}" ] || fail "sdk:// 源缺少 feed 名称：${source_url}"
+  printf '%s' "${feed_name}"
+}
+
+resolve_source_commit() {
+  repo_dir="$1"
+
+  if git -C "${repo_dir}" rev-parse HEAD >/dev/null 2>&1; then
+    git -C "${repo_dir}" rev-parse HEAD
+  else
+    printf 'unknown'
+  fi
 }
 
 collect_raw_specs() {
@@ -189,12 +225,20 @@ prepare_sources() {
       continue
     fi
 
+    if is_sdk_feed_source "${source_url}"; then
+      feed_name="$(sdk_feed_name "${source_url}")"
+      repo_dir="${SDK_ROOT}/feeds/${feed_name}"
+      log "使用 SDK 官方 feed：${feed_name}"
+      printf '%s\t%s\t%s\t%s\t%s\n' "${source_url}" "${source_ref}" "${feed_name}" "${repo_dir}" "sdkfeed" >> "${SOURCE_MAP_FILE}"
+      continue
+    fi
+
     source_index=$((source_index + 1))
     feed_name="custom${source_index}"
     repo_dir="${SOURCE_ROOT}/${feed_name}"
 
     clone_source_repo "${source_url}" "${source_ref}" "${repo_dir}"
-    printf '%s\t%s\t%s\t%s\n' "${source_url}" "${source_ref}" "${feed_name}" "${repo_dir}" >> "${SOURCE_MAP_FILE}"
+    printf '%s\t%s\t%s\t%s\t%s\n' "${source_url}" "${source_ref}" "${feed_name}" "${repo_dir}" "git" >> "${SOURCE_MAP_FILE}"
   done < "${PACKAGE_FILE}"
 }
 
@@ -208,7 +252,7 @@ prepare_local_tools() {
     mapping="$(lookup_source_mapping "${source_url}" "${source_ref}")"
     [ -n "${mapping}" ] || fail "未找到源码映射：${source_url} @ ${source_ref}"
 
-    IFS="${TAB}" read -r _map_url _map_ref feed_name repo_dir <<EOF
+    IFS="${TAB}" read -r _map_url _map_ref feed_name repo_dir source_kind <<EOF
 ${mapping}
 EOF
 
@@ -225,7 +269,8 @@ configure_feeds() {
   cd "${SDK_ROOT}"
 
   cp feeds.conf.default feeds.conf
-  while IFS="${TAB}" read -r source_url source_ref feed_name repo_dir; do
+  while IFS="${TAB}" read -r source_url source_ref feed_name repo_dir source_kind; do
+    [ "${source_kind}" = "git" ] || continue
     printf '\nsrc-link %s %s\n' "${feed_name}" "${repo_dir}" >> feeds.conf
   done < "${SOURCE_MAP_FILE}"
 
@@ -240,7 +285,7 @@ configure_feeds() {
     mapping="$(lookup_source_mapping "${source_url}" "${source_ref}")"
     [ -n "${mapping}" ] || fail "未找到源码映射：${source_url} @ ${source_ref}"
 
-    IFS="${TAB}" read -r _map_url _map_ref feed_name repo_dir <<EOF
+    IFS="${TAB}" read -r _map_url _map_ref feed_name repo_dir source_kind <<EOF
 ${mapping}
 EOF
     pkg_name="${package_dir##*/}"
@@ -284,7 +329,7 @@ compile_packages() {
     mapping="$(lookup_source_mapping "${source_url}" "${source_ref}")"
     [ -n "${mapping}" ] || fail "未找到源码映射：${source_url} @ ${source_ref}"
 
-    IFS="${TAB}" read -r _map_url _map_ref feed_name repo_dir <<EOF
+    IFS="${TAB}" read -r _map_url _map_ref feed_name repo_dir source_kind <<EOF
 ${mapping}
 EOF
 
@@ -307,6 +352,14 @@ render_release_notes() {
     echo "OpenWrt Version: ${OPENWRT_VERSION}"
     echo "OpenWrt Arch: ${OPENWRT_ARCH}"
     echo "SDK Image: ${SDK_IMAGE}"
+    [ -n "${TARGET_DEVICE_NAME}" ] && echo "Target Device: ${TARGET_DEVICE_NAME}"
+    [ -n "${TARGET_BOARD_NAME}" ] && echo "Target Board: ${TARGET_BOARD_NAME}"
+    [ -n "${TARGET_FIRMWARE_RELEASE}" ] && echo "Target Firmware Release: ${TARGET_FIRMWARE_RELEASE}"
+    [ -n "${TARGET_FIRMWARE_REVISION}" ] && echo "Target Firmware Revision: ${TARGET_FIRMWARE_REVISION}"
+    [ -n "${TARGET_FIRMWARE_TARGET}" ] && echo "Target Firmware Target: ${TARGET_FIRMWARE_TARGET}"
+    [ -n "${TARGET_FIRMWARE_ARCH}" ] && echo "Target Firmware Arch: ${TARGET_FIRMWARE_ARCH}"
+    [ -n "${TARGET_FIRMWARE_KERNEL}" ] && echo "Target Firmware Kernel: ${TARGET_FIRMWARE_KERNEL}"
+    [ -n "${TARGET_FIREWALL_BACKEND}" ] && echo "Target Firewall Backend: ${TARGET_FIREWALL_BACKEND}"
     echo "Default Source URL: ${PACKAGE_SOURCE_URL}"
     echo "Default Source Ref: ${PACKAGE_SOURCE_REF}"
     echo "Build Time (UTC): ${build_time}"
@@ -315,8 +368,8 @@ render_release_notes() {
       echo "- ${package_dir} | ${source_url} @ ${source_ref}"
     done < "${PACKAGE_FILE}"
     echo "Resolved Source Commits:"
-    while IFS="${TAB}" read -r source_url source_ref feed_name repo_dir; do
-      source_commit="$(git -C "${repo_dir}" rev-parse HEAD)"
+    while IFS="${TAB}" read -r source_url source_ref feed_name repo_dir source_kind; do
+      source_commit="$(resolve_source_commit "${repo_dir}")"
       echo "- ${feed_name} | ${source_url} @ ${source_ref} | ${source_commit}"
     done < "${SOURCE_MAP_FILE}"
   } > "${DIST_DIR}/BUILD_INFO.txt"
@@ -327,6 +380,14 @@ render_release_notes() {
     echo "- OpenWrt: \`${OPENWRT_VERSION}\`"
     echo "- 架构: \`${OPENWRT_ARCH}\`"
     echo "- SDK 镜像: \`${SDK_IMAGE}\`"
+    [ -n "${TARGET_DEVICE_NAME}" ] && echo "- 目标设备: \`${TARGET_DEVICE_NAME}\`"
+    [ -n "${TARGET_BOARD_NAME}" ] && echo "- 目标板型: \`${TARGET_BOARD_NAME}\`"
+    [ -n "${TARGET_FIRMWARE_RELEASE}" ] && echo "- 目标固件版本: \`${TARGET_FIRMWARE_RELEASE}\`"
+    [ -n "${TARGET_FIRMWARE_REVISION}" ] && echo "- 目标固件修订: \`${TARGET_FIRMWARE_REVISION}\`"
+    [ -n "${TARGET_FIRMWARE_TARGET}" ] && echo "- 目标固件 Target: \`${TARGET_FIRMWARE_TARGET}\`"
+    [ -n "${TARGET_FIRMWARE_ARCH}" ] && echo "- 目标固件架构: \`${TARGET_FIRMWARE_ARCH}\`"
+    [ -n "${TARGET_FIRMWARE_KERNEL}" ] && echo "- 目标内核: \`${TARGET_FIRMWARE_KERNEL}\`"
+    [ -n "${TARGET_FIREWALL_BACKEND}" ] && echo "- 目标防火墙后端: \`${TARGET_FIREWALL_BACKEND}\`"
     echo "- 默认源码仓库: \`${PACKAGE_SOURCE_URL}\`"
     echo "- 默认源码 Ref: \`${PACKAGE_SOURCE_REF}\`"
     echo "- 构建时间(UTC): \`${build_time}\`"
@@ -337,8 +398,8 @@ render_release_notes() {
     done < "${PACKAGE_FILE}"
     echo
     echo "## Resolved source commits"
-    while IFS="${TAB}" read -r source_url source_ref feed_name repo_dir; do
-      source_commit="$(git -C "${repo_dir}" rev-parse HEAD)"
+    while IFS="${TAB}" read -r source_url source_ref feed_name repo_dir source_kind; do
+      source_commit="$(resolve_source_commit "${repo_dir}")"
       echo "- \`${feed_name}\`: \`${source_url}\` @ \`${source_ref}\` -> \`${source_commit}\`"
     done < "${SOURCE_MAP_FILE}"
   } > "${DIST_DIR}/RELEASE_NOTES.md"
@@ -397,4 +458,3 @@ main() {
 }
 
 main "$@"
-

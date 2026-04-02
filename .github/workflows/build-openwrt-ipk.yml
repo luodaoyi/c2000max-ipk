@@ -1,14 +1,14 @@
-name: build-openwrt-21.02.7-a53-ipk
+name: build-c200max-mt7987-ipk
 
 on:
   workflow_dispatch:
     inputs:
       packages:
-        description: '要编译的包目录（相对 shidahuilang/openwrt-package，可用逗号、空格或换行分隔；留空则读取 config/packages.txt）'
+        description: '要编译的包清单，可用逗号、空格或换行分隔；支持 package_dir 或 package_dir|source_url|source_ref；留空则读取 config/packages.txt'
         required: false
         type: string
       source_ref:
-        description: '上游源码分支 / 标签 / 提交（默认 Lede）'
+        description: '默认源码分支 / 标签 / 提交（仅对未显式写 source_ref 的条目生效，默认 Lede）'
         required: false
         default: Lede
         type: string
@@ -61,6 +61,14 @@ jobs:
             echo "PACKAGE_SOURCE_URL=${PACKAGE_SOURCE_URL}"
             echo "PACKAGE_SOURCE_REF=${PACKAGE_SOURCE_REF}"
             echo "CUSTOM_FEED_NAME=${CUSTOM_FEED_NAME}"
+            echo "TARGET_DEVICE_NAME=${TARGET_DEVICE_NAME}"
+            echo "TARGET_BOARD_NAME=${TARGET_BOARD_NAME}"
+            echo "TARGET_FIRMWARE_RELEASE=${TARGET_FIRMWARE_RELEASE}"
+            echo "TARGET_FIRMWARE_REVISION=${TARGET_FIRMWARE_REVISION}"
+            echo "TARGET_FIRMWARE_TARGET=${TARGET_FIRMWARE_TARGET}"
+            echo "TARGET_FIRMWARE_ARCH=${TARGET_FIRMWARE_ARCH}"
+            echo "TARGET_FIRMWARE_KERNEL=${TARGET_FIRMWARE_KERNEL}"
+            echo "TARGET_FIREWALL_BACKEND=${TARGET_FIREWALL_BACKEND}"
           } >> "${GITHUB_ENV}"
 
       - name: Resolve workflow inputs
@@ -89,7 +97,8 @@ jobs:
             release_tag="${INPUT_RELEASE_TAG:-}"
             if [[ "${publish_release}" == "true" && -z "${release_tag}" ]]; then
               timestamp="$(date -u +'%Y%m%d%H%M%S')"
-              release_tag="owrt-${OPENWRT_VERSION}-${OPENWRT_ARCH}-${timestamp}"
+              sanitized_target="${TARGET_FIRMWARE_TARGET//\//-}"
+              release_tag="c200max-${sanitized_target}-${TARGET_FIRMWARE_KERNEL}-${timestamp}"
             fi
           elif [[ "${EVENT_NAME}" == "push" && "${GIT_REF_TYPE}" == "tag" ]]; then
             publish_release="true"
@@ -132,6 +141,14 @@ jobs:
             --env PACKAGE_SOURCE_REF \
             --env PACKAGE_DIRS \
             --env CUSTOM_FEED_NAME \
+            --env TARGET_DEVICE_NAME \
+            --env TARGET_BOARD_NAME \
+            --env TARGET_FIRMWARE_RELEASE \
+            --env TARGET_FIRMWARE_REVISION \
+            --env TARGET_FIRMWARE_TARGET \
+            --env TARGET_FIRMWARE_ARCH \
+            --env TARGET_FIRMWARE_KERNEL \
+            --env TARGET_FIREWALL_BACKEND \
             --volume "${GITHUB_WORKSPACE}:/workspace" \
             --volume "${GITHUB_WORKSPACE}/.cache/openwrt-dl:/builder/dl" \
             "${SDK_IMAGE}" \
@@ -150,7 +167,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-ipk-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_ARCH }}-${{ github.run_number }}
+          name: c200max-ipk-${{ env.TARGET_BOARD_NAME }}-${{ env.TARGET_FIRMWARE_KERNEL }}-${{ github.run_number }}
           path: dist/*.ipk
           if-no-files-found: warn
 
@@ -193,4 +210,3 @@ jobs:
               echo "未找到 build 日志或 BUILD_INFO.txt。"
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
-
