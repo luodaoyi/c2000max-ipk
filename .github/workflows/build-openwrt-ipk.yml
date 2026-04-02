@@ -122,6 +122,7 @@ jobs:
 
           set +e
           docker run --rm \
+            --user root \
             --env WORKSPACE=/workspace \
             --env SDK_ROOT=/builder \
             --env OPENWRT_VERSION \
