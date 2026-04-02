@@ -1,0 +1,178 @@
+name: build-openwrt-21.02.7-a53-ipk
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: '要编译的包目录（相对 shidahuilang/openwrt-package，可用逗号、空格或换行分隔；留空则读取 config/packages.txt）'
+        required: false
+        type: string
+      source_ref:
+        description: '上游源码分支 / 标签 / 提交（默认 Lede）'
+        required: false
+        default: Lede
+        type: string
+      publish_release:
+        description: '编译后是否创建/更新 GitHub Release'
+        required: false
+        default: true
+        type: boolean
+      release_tag:
+        description: 'Release 标签（留空自动生成）'
+        required: false
+        type: string
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - '.github/workflows/build-openwrt-ipk.yml'
+      - 'config/**'
+      - 'scripts/**'
+      - '.gitattributes'
+      - '.gitignore'
+      - 'README.md'
+    tags:
+      - 'v*'
+
+concurrency:
+  group: openwrt-ipk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Load target config
+        shell: bash
+        run: |
+          set -euo pipefail
+          source config/target.env
+          {
+            echo "OPENWRT_VERSION=${OPENWRT_VERSION}"
+            echo "OPENWRT_ARCH=${OPENWRT_ARCH}"
+            echo "SDK_IMAGE=${SDK_IMAGE}"
+            echo "PACKAGE_SOURCE_URL=${PACKAGE_SOURCE_URL}"
+            echo "PACKAGE_SOURCE_REF=${PACKAGE_SOURCE_REF}"
+            echo "CUSTOM_FEED_NAME=${CUSTOM_FEED_NAME}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Resolve workflow inputs
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF_NAME: ${{ github.ref_name }}
+          GIT_REF_TYPE: ${{ github.ref_type }}
+          INPUT_PACKAGES: ${{ github.event.inputs.packages }}
+          INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref }}
+          INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          source_ref="${INPUT_SOURCE_REF:-}"
+          if [[ -z "${source_ref}" ]]; then
+            source_ref="${PACKAGE_SOURCE_REF}"
+          fi
+
+          publish_release="false"
+          release_tag=""
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            publish_release="${INPUT_PUBLISH_RELEASE:-true}"
+            release_tag="${INPUT_RELEASE_TAG:-}"
+            if [[ "${publish_release}" == "true" && -z "${release_tag}" ]]; then
+              timestamp="$(date -u +'%Y%m%d%H%M%S')"
+              release_tag="owrt-${OPENWRT_VERSION}-${OPENWRT_ARCH}-${timestamp}"
+            fi
+          elif [[ "${EVENT_NAME}" == "push" && "${GIT_REF_TYPE}" == "tag" ]]; then
+            publish_release="true"
+            release_tag="${GIT_REF_NAME}"
+          fi
+
+          mkdir -p .cache/openwrt-dl dist
+
+          {
+            echo "PACKAGE_SOURCE_REF=${source_ref}"
+            echo "PUBLISH_RELEASE=${publish_release}"
+            echo "RELEASE_TAG=${release_tag}"
+            printf 'PACKAGE_DIRS<<__EOF__\n%s\n__EOF__\n' "${INPUT_PACKAGES:-}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Restore OpenWrt download cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/openwrt-dl
+          key: ${{ runner.os }}-openwrt-dl-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_ARCH }}-${{ hashFiles('config/packages.txt', 'config/target.env', 'scripts/build-ipk.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-dl-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_ARCH }}-
+
+      - name: Build IPK packages inside OpenWrt SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-ipk.sh
+
+          docker run --rm \
+            --env WORKSPACE=/workspace \
+            --env SDK_ROOT=/builder \
+            --env OPENWRT_VERSION \
+            --env OPENWRT_ARCH \
+            --env SDK_IMAGE \
+            --env PACKAGE_SOURCE_URL \
+            --env PACKAGE_SOURCE_REF \
+            --env PACKAGE_DIRS \
+            --env CUSTOM_FEED_NAME \
+            --volume "${GITHUB_WORKSPACE}:/workspace" \
+            --volume "${GITHUB_WORKSPACE}/.cache/openwrt-dl:/builder/dl" \
+            "${SDK_IMAGE}" \
+            /bin/sh -lc '/workspace/scripts/build-ipk.sh'
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-ipk-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_ARCH }}-${{ github.run_number }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: env.PUBLISH_RELEASE == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --notes-file dist/RELEASE_NOTES.md
+            gh release upload "${RELEASE_TAG}" dist/* --clobber
+          else
+            gh release create "${RELEASE_TAG}" dist/* \
+              --target "${GITHUB_SHA}" \
+              --title "${RELEASE_TAG}" \
+              --notes-file dist/RELEASE_NOTES.md
+          fi
+
+      - name: Write workflow summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## OpenWrt IPK build summary"
+            echo
+            if [[ -f dist/BUILD_INFO.txt ]]; then
+              echo '```text'
+              cat dist/BUILD_INFO.txt
+              echo '```'
+            else
+              echo "dist/BUILD_INFO.txt 尚未生成。"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

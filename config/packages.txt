@@ -1,0 +1,11 @@
+# 每行填写一个上游仓库中的包目录，路径相对于：
+# https://github.com/shidahuilang/openwrt-package
+#
+# 当前默认目标：
+# - luci-app-openclash
+# - luci-app-zerotier
+#
+# 如需调整，可以直接修改此文件，或在 Actions 手动运行时填写 packages 输入框。
+
+luci-app-openclash
+luci-app-zerotier
