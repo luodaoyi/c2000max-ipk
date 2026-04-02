@@ -1,10 +1,16 @@
-name: release-c200max-latest-ipk
+name: release-c200max-versioned-ipk
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '指定发布版本号（如 1.0.3）；留空则自动从 1.0.0 开始或在最新版本 patch +1'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
-  group: openwrt-ipk-release-latest-${{ github.ref }}
+  group: openwrt-ipk-release-versioned-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -37,11 +43,47 @@ jobs:
             echo "TARGET_FIRMWARE_ARCH=${TARGET_FIRMWARE_ARCH}"
             echo "TARGET_FIRMWARE_KERNEL=${TARGET_FIRMWARE_KERNEL}"
             echo "TARGET_FIREWALL_BACKEND=${TARGET_FIREWALL_BACKEND}"
-            echo "PUBLISH_RELEASE=true"
-            echo "RELEASE_TAG=latest"
             printf 'PACKAGE_DIRS<<__EOF__\n\n__EOF__\n'
           } >> "${GITHUB_ENV}"
           mkdir -p .cache/openwrt-dl dist
+
+      - name: Resolve release version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+
+          release_tag="${INPUT_VERSION:-}"
+
+          if [[ -z "${release_tag}" ]]; then
+            existing_tags="$(gh release list --repo "${GITHUB_REPOSITORY}" --limit 200 --json tagName --jq '.[].tagName' || true)"
+            release_tag="$(EXISTING_TAGS="${existing_tags}" python3 - <<'PY'
+import os, re
+versions = []
+for raw in os.environ.get('EXISTING_TAGS', '').splitlines():
+    tag = raw.strip()
+    m = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', tag)
+    if m:
+        versions.append(tuple(map(int, m.groups())))
+if not versions:
+    print('1.0.0')
+else:
+    versions.sort()
+    major, minor, patch = versions[-1]
+    print(f'{major}.{minor}.{patch + 1}')
+PY
+)"
+          fi
+
+          if [[ ! "${release_tag}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release version: ${release_tag}" >&2
+            exit 1
+          fi
+
+          echo "RELEASE_TAG=${release_tag}" >> "${GITHUB_ENV}"
+          echo "Resolved release version: ${release_tag}"
 
       - name: Restore OpenWrt download cache
         uses: actions/cache@v4
@@ -51,7 +93,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-dl-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_ARCH }}-
 
-      - name: Build latest IPK packages inside OpenWrt SDK
+      - name: Build versioned IPK packages inside OpenWrt SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +138,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: c200max-latest-release-${{ env.TARGET_BOARD_NAME }}-${{ github.run_number }}
+          name: c200max-versioned-release-${{ env.TARGET_BOARD_NAME }}-${{ env.RELEASE_TAG }}
           path: |
             dist/*.ipk
             dist/Packages
@@ -107,7 +149,7 @@ jobs:
             dist/build.log
           if-no-files-found: warn
 
-      - name: Publish latest GitHub Release
+      - name: Publish versioned GitHub Release
         if: success()
         shell: bash
         env:
@@ -147,7 +189,9 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Latest release build summary"
+            echo "## Versioned release build summary"
+            echo
+            echo "Release version: ${RELEASE_TAG}"
             echo
             if [[ -f dist/BUILD_INFO.txt ]]; then
               echo '```text'

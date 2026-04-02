@@ -13,12 +13,12 @@ on:
         default: Lede
         type: string
       publish_release:
-        description: '编译后是否创建/更新 GitHub Release'
+        description: '编译后是否创建/更新 GitHub Release（默认关闭；正式发版请优先使用 versioned release workflow）'
         required: false
-        default: true
+        default: false
         type: boolean
       release_tag:
-        description: 'Release 标签（留空自动生成）'
+        description: 'Release 版本号（如 1.0.0）；留空则在发布时自动从 1.0.0 开始或在最新版本 patch +1'
         required: false
         type: string
   workflow_call:
@@ -112,13 +112,8 @@ jobs:
           release_tag=""
 
           if [[ "${EVENT_NAME}" == "workflow_dispatch" || "${EVENT_NAME}" == "workflow_call" ]]; then
-            publish_release="${INPUT_PUBLISH_RELEASE:-true}"
+            publish_release="${INPUT_PUBLISH_RELEASE:-false}"
             release_tag="${INPUT_RELEASE_TAG:-}"
-            if [[ "${publish_release}" == "true" && -z "${release_tag}" ]]; then
-              timestamp="$(date -u +'%Y%m%d%H%M%S')"
-              sanitized_target="${TARGET_FIRMWARE_TARGET//\//-}"
-              release_tag="c200max-${sanitized_target}-${TARGET_FIRMWARE_KERNEL}-${timestamp}"
-            fi
           elif [[ "${EVENT_NAME}" == "push" && "${GIT_REF_TYPE}" == "tag" ]]; then
             publish_release="true"
             release_tag="${GIT_REF_NAME}"
@@ -132,6 +127,47 @@ jobs:
             echo "RELEASE_TAG=${release_tag}"
             printf 'PACKAGE_DIRS<<__EOF__\n%s\n__EOF__\n' "${INPUT_PACKAGES:-}"
           } >> "${GITHUB_ENV}"
+
+      - name: Resolve release version
+        if: env.PUBLISH_RELEASE == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+
+          release_tag="${REQUESTED_RELEASE_TAG:-}"
+
+          if [[ -z "${release_tag}" ]]; then
+            existing_tags="$(gh release list --repo "${GITHUB_REPOSITORY}" --limit 200 --json tagName --jq '.[].tagName' || true)"
+            release_tag="$(EXISTING_TAGS="${existing_tags}" python3 - <<'PY'
+import os, re
+versions = []
+for raw in os.environ.get('EXISTING_TAGS', '').splitlines():
+    tag = raw.strip()
+    m = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', tag)
+    if m:
+        versions.append(tuple(map(int, m.groups())))
+if not versions:
+    print('1.0.0')
+else:
+    versions.sort()
+    major, minor, patch = versions[-1]
+    print(f'{major}.{minor}.{patch + 1}')
+PY
+)"
+          fi
+
+          if [[ ! "${release_tag}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! { [[ "${EVENT_NAME}" == "push" && "${GIT_REF_TYPE}" == "tag" ]]; }; then
+            echo "Invalid release version: ${release_tag}" >&2
+            exit 1
+          fi
+
+          echo "RELEASE_TAG=${release_tag}" >> "${GITHUB_ENV}"
+          echo "Resolved release version: ${release_tag}"
 
       - name: Restore OpenWrt download cache
         uses: actions/cache@v4
