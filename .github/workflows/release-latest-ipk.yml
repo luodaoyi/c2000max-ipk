@@ -1,0 +1,14 @@
+name: release-c200max-latest-ipk
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release-latest:
+    uses: ./.github/workflows/build-openwrt-ipk.yml
+    with:
+      packages: ''
+      source_ref: ''
+      publish_release: true
+      release_tag: latest
+    secrets: inherit

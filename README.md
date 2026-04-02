@@ -35,7 +35,9 @@
 ## 仓库内容
 
 - `.github/workflows/build-openwrt-ipk.yml`
-  - 负责拉起 OpenWrt SDK 容器、编译包、上传产物，并可按需自动发布 GitHub Release
+  - 通用构建工作流，可手动运行，也可被其他 workflow 复用
+- `.github/workflows/release-latest-ipk.yml`
+  - 一键 latest release 工作流；点击后会自动拉最新上游源码、编译并更新固定 `latest` Release
 - `scripts/build-ipk.sh`
   - 在 OpenWrt SDK 容器内执行的实际编译脚本
 - `config/target.env`
@@ -81,7 +83,7 @@ package_dir|source_url|source_ref
 
 推送到 `master` 或 `main` 分支后，会自动按 `config/packages.txt` 中的包列表执行构建。
 
-### 方式 2：手动触发 GitHub Actions
+### 方式 2：手动运行通用构建工作流
 
 在仓库 Actions 页面运行 `build-c200max-mt7987-ipk`，可选输入：
 
@@ -98,6 +100,17 @@ package_dir|source_url|source_ref
 - `release_tag`
   - Release 标签；留空会自动生成
 
+### 方式 3：一键发布 latest release
+
+在仓库 Actions 页面运行 `release-c200max-latest-ipk`：
+
+- 无需填写参数
+- 会自动拉取当前默认配置对应的**最新上游源码**
+- 自动编译最新 IPK
+- 自动更新固定标签的 GitHub Release：`latest`
+
+适合你平时点一下就刷新 Release。
+
 ## 产物说明
 
 工作流结束后会产出：
@@ -107,9 +120,17 @@ package_dir|source_url|source_ref
 - `Packages.gz`
 - `SHA256SUMS`
 - `BUILD_INFO.txt`
+- `RELEASE_NOTES.md`
 - `build.log`（便于排障）
 
-如果开启 `publish_release`，这些文件也会被写入 release notes，`.ipk` 会被上传到 GitHub Release，便于直接下载。
+如果开启 `publish_release`，Release 中会上传：
+
+- `*.ipk`
+- `Packages`
+- `Packages.gz`
+- `SHA256SUMS`
+- `BUILD_INFO.txt`
+- `RELEASE_NOTES.md`
 
 ## 注意事项
 
